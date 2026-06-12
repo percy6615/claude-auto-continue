@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Auto-Continue (claude.ai)",
+  "version": "0.1.0",
+  "description": "在 5 小時用量限制重置後，自動到指定的 claude.ai 對話送出「繼續」。Runs in your own logged-in tab.",
+  "permissions": ["alarms", "storage", "tabs"],
+  "host_permissions": ["https://claude.ai/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Claude Auto-Continue"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

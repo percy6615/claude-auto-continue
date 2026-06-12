@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root { color-scheme: light dark; }
+  body { width: 340px; margin: 0; padding: 12px;
+         font: 13px/1.45 -apple-system, "Noto Sans TC", system-ui, sans-serif; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  label { display: block; font-weight: 600; margin: 10px 0 3px; }
+  textarea, input[type=text], input[type=datetime-local] {
+    width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #999;
+    border-radius: 6px; font: inherit; background: Field; color: FieldText; }
+  textarea { resize: vertical; }
+  .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  button { flex: 1; min-width: 70px; padding: 7px 8px; border: 1px solid #888;
+           border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; font: inherit; }
+  button.secondary { background: transparent; color: inherit; }
+  button.danger { background: #b91c1c; }
+  .hint { font-size: 11px; opacity: .7; margin-top: 2px; }
+  .box { border: 1px solid #aaa; border-radius: 6px; padding: 8px; margin-top: 10px; font-size: 12px; }
+  .ok { color: #16a34a; } .bad { color: #dc2626; }
+  details summary { cursor: pointer; font-weight: 600; margin-top: 12px; }
+  code { font-size: 11px; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Claude Auto-Continue</h1>
+
+  <label>對話網址（一行一個）</label>
+  <textarea id="urls" rows="2" placeholder="https://claude.ai/chat/xxxxxxxx-...."></textarea>
+  <div class="hint">在 claude.ai 打開那個對話，從網址列複製。</div>
+
+  <label>送出的訊息</label>
+  <input type="text" id="msg" />
+
+  <div class="box" id="detectedBox">
+    <div><b>偵測到的限制資訊</b></div>
+    <div id="detectedText">（尚無，按下方「重新掃描」）</div>
+  </div>
+
+  <label>重置時間（可手動覆寫）</label>
+  <input type="datetime-local" id="resetAt" />
+  <div class="row">
+    <button class="secondary" id="rescan">重新掃描使用中分頁</button>
+    <button class="secondary" id="useDetected">套用偵測時間</button>
+  </div>
+
+  <div class="row">
+    <button id="save" class="secondary">儲存設定</button>
+    <button id="arm">Arm（到時自動送出）</button>
+  </div>
+  <div class="row">
+    <button id="test" class="secondary">立即測試送出</button>
+    <button id="cancel" class="danger">取消排程</button>
+  </div>
+
+  <div class="box" id="statusBox">
+    <div><b>狀態</b></div>
+    <div id="statusText">—</div>
+  </div>
+
+  <details>
+    <summary>進階：selector / 延遲</summary>
+    <label>輸入框 selector（一行一個）</label>
+    <textarea id="selEditor" rows="3"></textarea>
+    <label>送出鈕 selector（一行一個）</label>
+    <textarea id="selSend" rows="3"></textarea>
+    <label>頁面載入後等待（毫秒）</label>
+    <input type="text" id="sendDelay" />
+    <div class="hint">校準完成後，把你 DevTools 找到的真實 selector 貼在這裡並儲存。</div>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>
