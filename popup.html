@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <style>
   :root { color-scheme: light dark; }
-  body { width: 340px; margin: 0; padding: 12px;
+  body { width: 360px; margin: 0; padding: 12px;
          font: 13px/1.45 -apple-system, "Noto Sans TC", system-ui, sans-serif; }
   h1 { font-size: 14px; margin: 0 0 8px; }
   label { display: block; font-weight: 600; margin: 10px 0 3px; }
@@ -12,14 +12,19 @@
     width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #999;
     border-radius: 6px; font: inherit; background: Field; color: FieldText; }
   textarea { resize: vertical; }
-  .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-  button { flex: 1; min-width: 70px; padding: 7px 8px; border: 1px solid #888;
+  .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+  button { flex: 1; min-width: 64px; padding: 7px 8px; border: 1px solid #888;
            border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; font: inherit; }
   button.secondary { background: transparent; color: inherit; }
   button.danger { background: #b91c1c; }
+  button.tiny { flex: 0 0 auto; min-width: 0; padding: 4px 8px; }
   .hint { font-size: 11px; opacity: .7; margin-top: 2px; }
   .box { border: 1px solid #aaa; border-radius: 6px; padding: 8px; margin-top: 10px; font-size: 12px; }
+  .slot { border: 1px solid #aaa; border-radius: 8px; padding: 8px; margin-top: 8px; }
+  .slot .row { margin-top: 6px; }
+  .slot input.text, .slot input.url { margin-top: 6px; }
   .ok { color: #16a34a; } .bad { color: #dc2626; }
+  .sstatus { font-size: 11px; opacity: .85; flex: 1; }
   details summary { cursor: pointer; font-weight: 600; margin-top: 12px; }
   code { font-size: 11px; word-break: break-all; }
 </style>
@@ -27,32 +32,31 @@
 <body>
   <h1>Claude Auto-Continue</h1>
 
-  <label>對話網址（一行一個）</label>
+  <label>預設對話網址（一行一個；時段未填網址時使用）</label>
   <textarea id="urls" rows="2" placeholder="https://claude.ai/chat/xxxxxxxx-...."></textarea>
-  <div class="hint">在 claude.ai 打開那個對話，從網址列複製。</div>
 
-  <label>送出的訊息</label>
-  <input type="text" id="msg" />
+  <label>預設文字（新時段的初始值）</label>
+  <input type="text" id="defaultText" />
 
   <div class="box" id="detectedBox">
     <div><b>偵測到的限制資訊</b></div>
-    <div id="detectedText">（尚無，按下方「重新掃描」）</div>
+    <div id="detectedText">（按下方「重新掃描」）</div>
+    <div class="row">
+      <button class="secondary" id="rescan">重新掃描使用中分頁</button>
+      <button class="secondary" id="addDetected">＋ 加入為時段</button>
+    </div>
   </div>
 
-  <label>重置時間（可手動覆寫）</label>
-  <input type="datetime-local" id="resetAt" />
+  <label>排程時段</label>
+  <div id="slots"></div>
   <div class="row">
-    <button class="secondary" id="rescan">重新掃描使用中分頁</button>
-    <button class="secondary" id="useDetected">套用偵測時間</button>
+    <button class="secondary" id="addSlot">＋ 新增時段</button>
   </div>
 
   <div class="row">
-    <button id="save" class="secondary">儲存設定</button>
-    <button id="arm">Arm（到時自動送出）</button>
-  </div>
-  <div class="row">
-    <button id="test" class="secondary">立即測試送出</button>
-    <button id="cancel" class="danger">取消排程</button>
+    <button id="save" class="secondary">儲存</button>
+    <button id="arm">Arm 全部</button>
+    <button id="cancel" class="danger">取消全部</button>
   </div>
 
   <div class="box" id="statusBox">
@@ -68,8 +72,23 @@
     <textarea id="selSend" rows="3"></textarea>
     <label>頁面載入後等待（毫秒）</label>
     <input type="text" id="sendDelay" />
-    <div class="hint">校準完成後，把你 DevTools 找到的真實 selector 貼在這裡並儲存。</div>
   </details>
+
+  <template id="slotTpl">
+    <div class="slot">
+      <div class="row">
+        <input type="checkbox" class="en" checked title="啟用" />
+        <input type="datetime-local" class="when" style="flex:1" />
+        <button class="del tiny danger" title="刪除">✕</button>
+      </div>
+      <input type="text" class="text" placeholder="這個時段要送出的文字" />
+      <input type="text" class="url" placeholder="（選填）此時段專用對話網址，留空用預設" />
+      <div class="row">
+        <button class="test tiny secondary">立即測試此段</button>
+        <span class="sstatus"></span>
+      </div>
+    </div>
+  </template>
 
   <script src="popup.js"></script>
 </body>

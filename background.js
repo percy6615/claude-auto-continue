@@ -1,16 +1,16 @@
 // background.js — service worker (MV3)
-// 負責：排程 alarm、到時開啟/聚焦對話分頁、請 content script 送出訊息。
+// 多時段排程：每個時段有自己的時間與文字（可各自指定對話）。
 
-const ALARM_NAME = "claude-auto-continue";
+const SLOT_PREFIX = "cac-slot-";
 
 const DEFAULTS = {
-  conversationUrls: [],     // 一行一個 https://claude.ai/chat/<uuid>
-  messageText: "繼續",
-  sendDelayMs: 4000,        // 頁面載入後、送出前等待（讓對話與輸入框 render）
-  betweenConvosMs: 8000,    // 多個對話之間的間隔
-  bufferSec: 45,            // 在重置時間之後再多等這幾秒才動作（保險）
+  conversationUrls: [],   // 預設對話（時段未填網址時用）
+  defaultText: "繼續",
+  sendDelayMs: 4000,
+  betweenConvosMs: 8000,
+  bufferSec: 45,
+  schedule: [],           // [{ id, when, text, url, enabled }]
   selectors: {
-    // 可在 popup「進階」覆寫；先放常見猜測，校準後請換成你的真實 selector
     editor: [
       "div.ProseMirror[contenteditable='true']",
       "div[contenteditable='true'].ProseMirror",
@@ -26,136 +26,140 @@ const DEFAULTS = {
   }
 };
 
-function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+function wait(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-async function getConfig() {
+async function getConfig(){
   const { config } = await chrome.storage.local.get("config");
   const c = config || {};
-  return {
-    ...DEFAULTS,
-    ...c,
-    selectors: { ...DEFAULTS.selectors, ...(c.selectors || {}) }
-  };
+  return { ...DEFAULTS, ...c, selectors: { ...DEFAULTS.selectors, ...(c.selectors||{}) } };
 }
 
-async function setStatus(patch) {
+async function patchSlotStatus(id, patch){
   const { status } = await chrome.storage.local.get("status");
-  await chrome.storage.local.set({
-    status: { ...(status || {}), ...patch, updatedAt: Date.now() }
-  });
+  const s = status || {};
+  s.slots = s.slots || {};
+  s.slots[id] = { ...(s.slots[id]||{}), ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ status: s });
 }
 
-async function arm(resetTimeMs) {
+async function clearAllSlotAlarms(){
+  const all = await chrome.alarms.getAll();
+  await Promise.all(
+    all.filter(a=>a.name.startsWith(SLOT_PREFIX)).map(a=>chrome.alarms.clear(a.name))
+  );
+}
+
+async function armSchedule(){
   const cfg = await getConfig();
-  const when = resetTimeMs + cfg.bufferSec * 1000;
-  await chrome.alarms.clear(ALARM_NAME);
-  await chrome.alarms.create(ALARM_NAME, { when });
-  await setStatus({ armed: true, nextFire: when, lastResult: null });
-  return when;
+  await clearAllSlotAlarms();
+  const now = Date.now();
+  let count = 0;
+  for (const slot of (cfg.schedule||[])){
+    if (slot.enabled === false) continue;
+    if (!slot.when || slot.when <= now) continue;          // 過期或未填時間者跳過
+    await chrome.alarms.create(SLOT_PREFIX + slot.id, { when: slot.when + cfg.bufferSec*1000 });
+    count++;
+  }
+  return count;
 }
 
-async function cancel() {
-  await chrome.alarms.clear(ALARM_NAME);
-  await setStatus({ armed: false, nextFire: null });
-}
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name !== ALARM_NAME) return;
-  await setStatus({ armed: false, nextFire: null });
-  await runContinueJob("alarm");
+chrome.alarms.onAlarm.addListener(async (alarm)=>{
+  if (!alarm.name.startsWith(SLOT_PREFIX)) return;
+  const id = alarm.name.slice(SLOT_PREFIX.length);
+  await runSlot(id, "alarm");
 });
 
-async function findOrCreateTab(url) {
+async function findOrCreateTab(url){
+  const base = u => (u||"").split("#")[0];
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
-  // 已經在這個對話的分頁
-  let tab = tabs.find(t => t.url && t.url.split("#")[0].startsWith(url.split("#")[0]));
-  if (tab) {
+  let tab = tabs.find(t => base(t.url).startsWith(base(url)));
+  if (tab){
     await chrome.tabs.update(tab.id, { active: true });
-    if (tab.url.split("#")[0] !== url.split("#")[0]) {
-      await chrome.tabs.update(tab.id, { url });
-    }
+    if (base(tab.url) !== base(url)) await chrome.tabs.update(tab.id, { url });
     return tab.id;
   }
-  // 重用任何 claude.ai 分頁
-  if (tabs[0]) {
-    await chrome.tabs.update(tabs[0].id, { active: true, url });
-    return tabs[0].id;
-  }
-  // 否則開新分頁
+  if (tabs[0]){ await chrome.tabs.update(tabs[0].id, { active: true, url }); return tabs[0].id; }
   const created = await chrome.tabs.create({ url, active: true });
   return created.id;
 }
 
-async function pingContent(tabId, timeoutMs = 20000) {
+async function pingContent(tabId, timeoutMs=20000){
   const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await chrome.tabs.sendMessage(tabId, { action: "ping" });
-      if (res && res.ok) return true;
-    } catch (e) { /* content script 尚未就緒 */ }
+  while (Date.now()-start < timeoutMs){
+    try { const res = await chrome.tabs.sendMessage(tabId, { action:"ping" }); if (res && res.ok) return true; }
+    catch(e){}
     await wait(700);
   }
   return false;
 }
 
-async function sendToTab(tabId, text, selectors) {
+async function sendToTab(tabId, text, selectors){
   try {
-    const res = await chrome.tabs.sendMessage(tabId, { action: "sendMessage", text, selectors });
-    return res || { ok: false, error: "content script 無回應" };
-  } catch (e) {
-    return { ok: false, error: String(e) };
-  }
+    const res = await chrome.tabs.sendMessage(tabId, { action:"sendMessage", text, selectors });
+    return res || { ok:false, error:"content script 無回應" };
+  } catch(e){ return { ok:false, error:String(e) }; }
 }
 
-async function runContinueJob(trigger) {
-  const cfg = await getConfig();
-  const urls = (cfg.conversationUrls || []).map(s => s.trim()).filter(Boolean);
-  if (urls.length === 0) {
-    await setStatus({ lastResult: { ok: false, trigger, error: "尚未設定對話 URL", at: Date.now() } });
-    return;
-  }
+async function doSendJob(text, urls, cfg){
+  urls = (urls||[]).map(s=>s.trim()).filter(Boolean);
+  if (urls.length === 0) return { ok:false, error:"沒有可用的對話 URL（時段未填、預設也空）", results:[] };
   const results = [];
-  for (let i = 0; i < urls.length; i++) {
+  for (let i=0;i<urls.length;i++){
     const url = urls[i];
     try {
       const tabId = await findOrCreateTab(url);
       const ready = await pingContent(tabId);
-      if (!ready) { results.push({ url, ok: false, error: "content script 未就緒（頁面可能未載入完成）" }); continue; }
+      if (!ready){ results.push({ url, ok:false, error:"content script 未就緒" }); continue; }
       await wait(cfg.sendDelayMs);
-      const r = await sendToTab(tabId, cfg.messageText, cfg.selectors);
+      const r = await sendToTab(tabId, text, cfg.selectors);
       results.push({ url, ...r });
-    } catch (e) {
-      results.push({ url, ok: false, error: String(e) });
-    }
-    if (i < urls.length - 1) await wait(cfg.betweenConvosMs);
+    } catch(e){ results.push({ url, ok:false, error:String(e) }); }
+    if (i < urls.length-1) await wait(cfg.betweenConvosMs);
   }
-  const ok = results.length > 0 && results.every(r => r.ok);
-  await setStatus({ lastResult: { ok, trigger, results, at: Date.now() } });
+  const ok = results.length>0 && results.every(r=>r.ok);
+  return { ok, results };
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  (async () => {
+async function runSlot(id, trigger){
+  const cfg = await getConfig();
+  const slot = (cfg.schedule||[]).find(s=>s.id===id);
+  if (!slot){
+    await patchSlotStatus(id, { lastResult:{ ok:false, trigger, error:"找不到此時段", at:Date.now() } });
+    return;
+  }
+  const urls = (slot.url && slot.url.trim()) ? [slot.url.trim()] : cfg.conversationUrls;
+  const text = (slot.text && slot.text.trim()) ? slot.text : cfg.defaultText;
+  const res = await doSendJob(text, urls, cfg);
+  await patchSlotStatus(id, { lastResult:{ ...res, trigger, text, at:Date.now() } });
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse)=>{
+  (async()=>{
     try {
-      if (msg.action === "arm") {
-        const when = await arm(msg.resetTimeMs);
-        sendResponse({ ok: true, when });
-      } else if (msg.action === "cancel") {
-        await cancel();
-        sendResponse({ ok: true });
-      } else if (msg.action === "testNow") {
-        await runContinueJob("test");
+      if (msg.action === "armSchedule"){
+        const count = await armSchedule();
+        sendResponse({ ok:true, count });
+      } else if (msg.action === "cancelAll"){
+        await clearAllSlotAlarms();
+        sendResponse({ ok:true });
+      } else if (msg.action === "testSend"){
+        const cfg = await getConfig();
+        const urls = (msg.url && msg.url.trim()) ? [msg.url.trim()] : cfg.conversationUrls;
+        const text = (msg.text && msg.text.trim()) ? msg.text : cfg.defaultText;
+        const result = await doSendJob(text, urls, cfg);
+        sendResponse({ ok:true, result });
+      } else if (msg.action === "getStatus"){
         const { status } = await chrome.storage.local.get("status");
-        sendResponse({ ok: true, status });
-      } else if (msg.action === "getStatus") {
-        const { status } = await chrome.storage.local.get("status");
-        const alarm = await chrome.alarms.get(ALARM_NAME);
-        sendResponse({ ok: true, status: status || {}, alarm: alarm || null });
+        const alarms = await chrome.alarms.getAll();
+        const slotAlarms = {};
+        for (const a of alarms){
+          if (a.name.startsWith(SLOT_PREFIX)) slotAlarms[a.name.slice(SLOT_PREFIX.length)] = a.scheduledTime;
+        }
+        sendResponse({ ok:true, status: status||{}, slotAlarms });
       } else {
-        sendResponse({ ok: false, error: "unknown action" });
+        sendResponse({ ok:false, error:"unknown action" });
       }
-    } catch (e) {
-      sendResponse({ ok: false, error: String(e) });
-    }
+    } catch(e){ sendResponse({ ok:false, error:String(e) }); }
   })();
   return true; // 非同步回應
 });
